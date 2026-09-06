@@ -1,6 +1,6 @@
 #!/bin/bash
 # Backend for Clean Lock — disable keyboard and/or trackpad for cleaning.
-set -euo pipefail
+set -Eeuo pipefail
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/cleanlock"
 STATE_FILE="$STATE_DIR/locked.json"
@@ -44,7 +44,7 @@ set_enabled() {
   local name=$1 enabled=$2
   local quoted
   quoted=$(quote_lua "$name")
-  hyprctl eval "hl.device({ name = \"$quoted\", enabled = $enabled })" >/dev/null 2>&1 || true
+  hyprctl eval "hl.device({ name = \"$quoted\", enabled = $enabled })" >/dev/null
 }
 
 list_keyboards() {
@@ -94,7 +94,11 @@ kill_pidfile() {
   if [[ -f $file ]]; then
     local pid
     pid=$(cat "$file" 2>/dev/null || true)
-    if [[ -n ${pid:-} ]]; then
+    local helper="$CHORD_BIN"
+    [[ $file == "$GUARD_PID_FILE" ]] && helper="$GUARD_BIN"
+    # PID files can survive a reboot; never signal an unrelated process.
+    if [[ ${pid:-} =~ ^[0-9]+$ ]] && [[ -r /proc/$pid/cmdline ]] &&
+      tr '\0' '\n' <"/proc/$pid/cmdline" | grep -Fxq -- "$helper"; then
       kill "$pid" 2>/dev/null || true
       # May not be our child; never fail the lock/unlock under set -e.
       wait "$pid" 2>/dev/null || true
@@ -106,7 +110,7 @@ kill_pidfile() {
 
 chord_stop() {
   kill_pidfile "$CHORD_PID_FILE"
-  rm -f "$PROGRESS_FILE"
+  rm -f "$PROGRESS_FILE" "$STATE_DIR/chord-ready"
   return 0
 }
 
@@ -122,8 +126,15 @@ chord_start() {
     echo "helper=$CHORD_BIN"
   } >>"$STATE_DIR/chord.log"
   nohup python3 "$CHORD_BIN" >>"$STATE_DIR/chord.log" 2>&1 &
-  echo $! >"$CHORD_PID_FILE"
-  return 0
+  local pid=$!
+  echo "$pid" >"$CHORD_PID_FILE"
+  for ((i=0; i<50; i++)); do
+    if [[ -f $STATE_DIR/chord-ready ]] && kill -0 "$pid" 2>/dev/null; then return 0; fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  echo "Clean Lock keyboard monitor failed to start; inputs restored. See $STATE_DIR/chord.log" >&2
+  return 1
 }
 
 guard_stop() {
@@ -178,7 +189,7 @@ notify_locked() {
   omarchy-osd -i keyboard -m "$msg — hold Super/Win 5s to unlock" 2>/dev/null || true
   notify-send -a CleanLock -i input-keyboard -u critical -t 0 \
     "$msg" \
-    "Hold the Super / Windows key for 5 seconds to unlock. Sleep/lock are inhibited while cleaning." >/dev/null 2>&1 || true
+    "Hold one Super / Windows key for 5 seconds to unlock. Sleep/lock are inhibited while cleaning." >/dev/null 2>&1 || true
 }
 
 notify_unlocked() {
@@ -198,6 +209,9 @@ notify_unlocked() {
 lock_devices() {
   local want_kb=$1 want_tp=$2
   local -a kbs=() tps=()
+  python3 "$CHORD_BIN" --check >/dev/null || return 1
+  # Record intended devices before changing them, so errors can roll back.
+  trap 'CLEANLOCK_SILENT=1 unlock_all; exit 1' ERR
 
   mapfile -t existing_kb < <(jq -r '.keyboard[]?' <<<"$(read_state)")
   mapfile -t existing_tp < <(jq -r '.trackpad[]?' <<<"$(read_state)")
@@ -212,10 +226,7 @@ lock_devices() {
       echo "No physical keyboard found" >&2
       exit 1
     fi
-    for name in "${kbs[@]}"; do
-      [[ -n $name ]] || continue
-      set_enabled "$name" false
-    done
+
   else
     kbs=("${existing_kb[@]}")
   fi
@@ -228,19 +239,8 @@ lock_devices() {
     fi
     if ((${#tps[@]} == 0)); then
       echo "No trackpad found" >&2
-      if ((want_kb)); then
-        write_state "$(printf '%s\n' "${kbs[@]}" | jq -R . | jq -s -c 'map(select(length>0))')" '[]'
-        chord_start
-        guard_start
-        notify_locked "Keyboard locked (no trackpad found)"
-        exit 0
-      fi
       exit 1
     fi
-    for name in "${tps[@]}"; do
-      [[ -n $name ]] || continue
-      set_enabled "$name" false
-    done
   else
     tps=("${existing_tp[@]}")
   fi
@@ -250,7 +250,12 @@ lock_devices() {
   tp_json=$(printf '%s\n' "${tps[@]}" | jq -R . | jq -s -c 'map(select(length>0))')
   write_state "$kb_json" "$tp_json"
   chord_start
+  for name in "${kbs[@]}" "${tps[@]}"; do
+    [[ -n $name ]] || continue
+    set_enabled "$name" false
+  done
   guard_start
+  trap - ERR
 
   local msg=
   if ((want_kb && want_tp)); then msg="Keyboard + trackpad locked"
@@ -261,18 +266,26 @@ lock_devices() {
 }
 
 unlock_all() {
-  chord_stop
+  if [[ ${CLEANLOCK_FROM_CHORD:-0} != 1 ]]; then
+    chord_stop
+  else
+    rm -f "$CHORD_PID_FILE" "$PROGRESS_FILE" "$STATE_DIR/chord-ready"
+  fi
   # When unlock is requested by cleanlock-guard itself, do not kill the guard
   # mid-flight — it will exit after unlock returns.
   if [[ ${CLEANLOCK_FROM_GUARD:-0} != 1 ]]; then
     guard_stop
   fi
-  local state
+  local state failed=0
   state=$(read_state)
   while IFS= read -r name; do
     [[ -n $name ]] || continue
-    set_enabled "$name" true
+    set_enabled "$name" true || failed=1
   done < <(jq -r '.keyboard[]?, .trackpad[]?' <<<"$state")
+  if ((failed)); then
+    echo "Could not restore every input device; run cleanlock unlock again." >&2
+    return 1
+  fi
   rm -f "$STATE_FILE"
   release_stay_awake_if_owned
   notify_unlocked
@@ -308,6 +321,7 @@ case "$cmd" in
   lock-both) lock_devices 1 1 ;;
   unlock) unlock_all ;;
   status) status_json ;;
+  setup-input) exec "$PLUGIN_DIR/bin/cleanlock-setup-input" ;;
   diagnose) diagnose ;;
   chord-start) chord_start ;;
   chord-stop) chord_stop ;;

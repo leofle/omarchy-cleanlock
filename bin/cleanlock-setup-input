@@ -1,0 +1,14 @@
+#!/bin/bash
+# Allow the active local desktop session to monitor keyboard keys.
+set -euo pipefail
+rule=$(mktemp)
+trap 'rm -f "$rule"' EXIT
+cat >"$rule" <<'EOF'
+# Clean Lock: grant keyboard input access to the active local session.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
+EOF
+pkexec /usr/bin/install -m 644 "$rule" /etc/udev/rules.d/70-cleanlock-input.rules
+pkexec /usr/bin/udevadm control --reload-rules
+pkexec /usr/bin/udevadm trigger --subsystem-match=input --action=change
+udevadm settle
+python3 "$(dirname "$(readlink -f "$0")")/cleanlock-chord" --check

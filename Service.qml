@@ -27,7 +27,6 @@ Item {
       trackpadLocked = !!data.trackpadLocked
       locked = !!data.locked
       chordProgress = Number(data.chordProgress || 0)
-      lastError = ""
     } catch (e) {
       lastError = "Could not read cleanlock status"
     }
@@ -35,6 +34,7 @@ Item {
 
   function run(args) {
     if (busy) return
+    lastError = ""
     busy = true
     actionProc.command = [bin].concat(args)
     actionProc.running = true
@@ -72,8 +72,8 @@ Item {
 
   // Poll often while locked so the fullscreen overlay counter stays smooth.
   Timer {
-    interval: 100
-    running: root.locked
+    interval: root.locked ? 100 : 1000
+    running: true
     repeat: true
     onTriggered: root.refresh()
   }

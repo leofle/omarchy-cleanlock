@@ -129,7 +129,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           text: (s && s.locked)
-            ? "Hold the Super / Windows key for 5 seconds to unlock."
+            ? "Hold one Super / Windows key for 5 seconds to unlock."
             : "Sleep and lock are inhibited while cleaning."
         }
 

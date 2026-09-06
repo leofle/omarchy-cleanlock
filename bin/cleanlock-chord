@@ -1,247 +1,138 @@
 #!/usr/bin/env python3
-"""Watch for Super/Windows held for 5 seconds, then unlock.
+"""Unlock after either Super key is continuously down for five seconds.
 
-Reads /dev/input directly so it still works after Hyprland disables the keyboard.
-Progress is reported as whole seconds 1..5 (not a percentage).
-
-Unlock: hold Left Super / Windows for 5 seconds.
-
-Why not Left+Right Super?
-  Many PC keyboards (e.g. Dell XPS) put a Copilot key where Right Super was.
-  Copilot usually pulses Meta+Shift+F23 and is not holdable as Right Meta, so a
-  dual-Super chord never arms. Holding Left Super alone works everywhere.
-
-Copilot still synthesizes a brief Left Meta release; we ignore that pulse so a
-physically held Win key keeps the timer running.
+Query the kernel's current key bitmap instead of remembering key events. This
+avoids stuck holds after Copilot pulses, missed releases, or device removal.
 """
-
 from __future__ import annotations
-
 import array
 import fcntl
 import glob
+import json
 import os
-import select
-import struct
+import subprocess
+import sys
 import time
 
-EV_KEY = 0x01
-KEY_LEFTSHIFT = 42
 KEY_LEFTMETA = 125
 KEY_RIGHTMETA = 126
-KEY_F23 = 193
-KEY_ASSISTANT = 0x247  # 583 — some stacks remap Copilot here
-EVENT_FMT = "llHHi"
-EVENT_SIZE = struct.calcsize(EVENT_FMT)
 HOLD_SECONDS = 5
+STATE_DIR = os.path.join(os.environ.get('XDG_STATE_HOME', os.path.expanduser('~/.local/state')), 'omarchy', 'cleanlock')
+STATE_FILE = os.path.join(STATE_DIR, 'locked.json')
+PROGRESS_FILE = os.path.join(STATE_DIR, 'chord-progress')
+READY_FILE = os.path.join(STATE_DIR, 'chord-ready')
 
 
-def _eviocgbit_key(length: int = 128) -> int:
-    nr = 0x20 + EV_KEY
-    return (2 << 30) | (ord("E") << 8) | nr | (length << 16)
+def bitmap(fd, nr):
+    buf = array.array('B', [0] * 128)
+    fcntl.ioctl(fd, (2 << 30) | (len(buf) << 16) | (ord('E') << 8) | nr, buf)
+    return buf
 
 
-def _eviocgname(length: int = 256) -> int:
-    return (2 << 30) | (ord("E") << 8) | 0x06 | (length << 16)
+def has(buf, code):
+    return bool(buf[code // 8] & (1 << (code % 8)))
 
 
-STATE_DIR = os.path.join(
-    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
-    "omarchy",
-    "cleanlock",
-)
-PROGRESS_FILE = os.path.join(STATE_DIR, "chord-progress")
-STATE_FILE = os.path.join(STATE_DIR, "locked.json")
+def open_keyboards():
+    devices = []
+    for path in sorted(glob.glob('/dev/input/event*')):
+        fd = None
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            keys = bitmap(fd, 0x21)  # EVIOCGBIT(EV_KEY)
+            if has(keys, KEY_LEFTMETA) or has(keys, KEY_RIGHTMETA):
+                bitmap(fd, 0x18)  # Verify EVIOCGKEY access before locking.
+                devices.append((fd, path))
+                fd = None
+        except OSError:
+            pass
+        finally:
+            if fd is not None:
+                os.close(fd)
+    return devices
 
 
-def log(msg: str) -> None:
-    print(msg, flush=True)
-
-
-def write_progress_seconds(seconds: int) -> None:
-    """Persist 0..5 for the panel / status JSON."""
-    os.makedirs(STATE_DIR, exist_ok=True)
-    tmp = PROGRESS_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(str(max(0, min(HOLD_SECONDS, int(seconds)))))
-    os.replace(tmp, PROGRESS_FILE)
-
-
-def clear_progress() -> None:
+def still_locked():
     try:
-        os.remove(PROGRESS_FILE)
+        with open(STATE_FILE) as fh:
+            state = json.load(fh)
+        return bool(state.get('keyboard') or state.get('trackpad'))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def remove(path):
+    try:
+        os.unlink(path)
     except FileNotFoundError:
         pass
 
 
-def still_locked() -> bool:
-    try:
-        import json
-
-        with open(STATE_FILE, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return bool(data.get("keyboard") or data.get("trackpad"))
-    except (FileNotFoundError, ValueError, TypeError):
-        return False
+def progress(seconds):
+    tmp = PROGRESS_FILE + '.tmp'
+    with open(tmp, 'w') as fh:
+        fh.write(str(seconds))
+    os.replace(tmp, PROGRESS_FILE)
 
 
-def device_name(fd: int) -> str:
-    buf = array.array("B", [0] * 256)
-    try:
-        fcntl.ioctl(fd, _eviocgname(len(buf)), buf)
-        return bytes(buf).split(b"\0", 1)[0].decode("utf-8", "replace") or "?"
-    except OSError:
-        return "?"
+def unlock():
+    env = dict(os.environ, CLEANLOCK_FROM_CHORD='1')
+    subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cleanlock'), 'unlock'], env=env, check=True)
 
 
-def device_has_left_meta(fd: int) -> bool:
-    buf = array.array("B", [0] * 128)
-    try:
-        fcntl.ioctl(fd, _eviocgbit_key(len(buf)), buf)
-    except OSError:
-        return False
+class Hold:
+    def __init__(self):
+        self.started = {}
 
-    def has(code: int) -> bool:
-        if code // 8 >= len(buf):
-            return False
-        return bool(buf[code // 8] & (1 << (code % 8)))
-
-    return has(KEY_LEFTMETA)
+    def update(self, pressed, now):
+        # Each physical key must remain down; switching keys does not extend it.
+        self.started = {key: self.started.get(key, now) for key in pressed}
+        return min(HOLD_SECONDS, int(max((now - t for t in self.started.values()), default=0)))
 
 
-def open_keyboards() -> list[tuple[int, str]]:
-    fds: list[tuple[int, str]] = []
-    errors: list[str] = []
-    for path in sorted(glob.glob("/dev/input/event*")):
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-        except OSError as exc:
-            errors.append(f"{path}: {exc}")
-            continue
-        if device_has_left_meta(fd):
-            name = device_name(fd)
-            log(f"watching {path} ({name})")
-            fds.append((fd, path))
-        else:
-            os.close(fd)
-    if not fds:
-        for line in errors[:12]:
-            log(f"open failed: {line}")
-        log("no Left-Meta keyboards found; watching all readable event nodes")
-        for path in sorted(glob.glob("/dev/input/event*")):
-            try:
-                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-            except OSError:
-                continue
-            log(f"fallback watch {path} ({device_name(fd)})")
-            fds.append((fd, path))
-    return fds
-
-
-def unlock() -> None:
-    plugin_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanlock")
-    if not os.path.isfile(plugin_bin):
-        plugin_bin = os.path.expanduser(
-            "~/.config/omarchy/plugins/io.github.leofle.cleanlock/bin/cleanlock"
-        )
-    log(f"unlock via {plugin_bin}")
-    os.spawnl(os.P_WAIT, plugin_bin, plugin_bin, "unlock")
-
-
-def is_copilot_pulse_code(code: int) -> bool:
-    return code in (KEY_F23, KEY_ASSISTANT, KEY_LEFTSHIFT)
-
-
-def main() -> int:
-    os.makedirs(STATE_DIR, exist_ok=True)
-    clear_progress()
-    log(f"cleanlock-chord start pid={os.getpid()} hold={HOLD_SECONDS}s")
-    fds = open_keyboards()
-    if not fds:
-        log("fatal: cannot open any /dev/input/event* (permission?)")
+def main():
+    devices = open_keyboards()
+    if not devices:
+        print('Clean Lock cannot monitor Super: no readable keyboard input device. Run cleanlock setup-input first.', file=sys.stderr, flush=True)
         return 1
-
-    left = False
-    right = False
-    # Copilot (and some firmwares) pulse Meta+Shift+F23 with a synthetic Meta up.
-    suppress_left_release_until = 0.0
-    hold_started: float | None = None
-    last_second_shown = 0
-
     try:
+        if '--check' in sys.argv:
+            print('Readable Super keyboard: ' + ', '.join(path for _, path in devices))
+            return 0
+        os.makedirs(STATE_DIR, exist_ok=True)
+        remove(PROGRESS_FILE)
+        with open(READY_FILE, 'w') as fh:
+            fh.write(str(os.getpid()))
+        hold = Hold()
+        last = None
         while still_locked():
-            readable, _, _ = select.select([fd for fd, _ in fds], [], [], 0.05)
-            now = time.monotonic()
-
-            for fd in readable:
-                while True:
-                    try:
-                        data = os.read(fd, EVENT_SIZE * 8)
-                    except BlockingIOError:
-                        break
-                    if not data:
-                        break
-                    offset = 0
-                    while offset + EVENT_SIZE <= len(data):
-                        chunk = data[offset : offset + EVENT_SIZE]
-                        offset += EVENT_SIZE
-                        _sec, _usec, etype, code, value = struct.unpack(EVENT_FMT, chunk)
-                        if etype != EV_KEY:
-                            continue
-                        if code == KEY_LEFTMETA:
-                            if value != 0:
-                                left = True
-                            elif now < suppress_left_release_until:
-                                pass
-                            else:
-                                left = False
-                        elif code == KEY_RIGHTMETA:
-                            right = value != 0
-                        elif is_copilot_pulse_code(code) and value == 1 and left:
-                            suppress_left_release_until = now + 0.35
-
-            # Hold Left Super / Windows (or Right Super on dual-Super boards).
-            chord_active = left or right
-
-            if chord_active:
-                if hold_started is None:
-                    hold_started = now
-                    last_second_shown = 0
-                    write_progress_seconds(0)
-                    log("hold started")
-
-                elapsed = now - hold_started
-                second = min(HOLD_SECONDS, int(elapsed))
-
-                if second != last_second_shown and second > 0:
-                    write_progress_seconds(second)
-                    last_second_shown = second
-                    log(f"progress {second}/{HOLD_SECONDS}")
-
-                if elapsed >= HOLD_SECONDS:
-                    write_progress_seconds(HOLD_SECONDS)
-                    unlock()
-                    return 0
-            else:
-                if hold_started is not None:
-                    hold_started = None
-                    last_second_shown = 0
-                    clear_progress()
-                    log("hold cancelled")
+            pressed = set()
+            for fd, path in devices:
+                keys = bitmap(fd, 0x18)
+                for code in (KEY_LEFTMETA, KEY_RIGHTMETA):
+                    if has(keys, code):
+                        pressed.add((path, code))
+            second = hold.update(pressed, time.monotonic())
+            if second != last:
+                progress(second)
+                last = second
+            if second >= HOLD_SECONDS:
+                unlock()
+                return 0
+            time.sleep(0.05)
+        return 0
+    except Exception as exc:
+        print(f'Clean Lock monitor failed: {exc}; restoring inputs', file=sys.stderr, flush=True)
+        if still_locked():
+            unlock()
+        return 1
     finally:
-        clear_progress()
-        for fd, _ in fds:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        log("cleanlock-chord exit")
-    return 0
+        for fd, _ in devices:
+            os.close(fd)
+        if '--check' not in sys.argv:
+            remove(PROGRESS_FILE)
+            remove(READY_FILE)
 
 
-if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:  # noqa: BLE001 — always leave a breadcrumb in chord.log
-        log(f"fatal: {exc!r}")
-        raise
+if __name__ == '__main__':
+    raise SystemExit(main())

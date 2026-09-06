@@ -73,7 +73,7 @@ PanelWindow {
       Text {
         width: parent.width
         visible: !root.holding
-        text: "Hold the Super / Windows key for 5 seconds to unlock"
+        text: "Hold one Super / Windows key for 5 seconds to unlock"
         color: Qt.darker(root.foreground, 1.35)
         font.family: root.fontFamily
         font.pixelSize: Style.font.body

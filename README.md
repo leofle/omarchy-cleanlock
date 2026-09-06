@@ -26,9 +26,32 @@ omarchy plugin enable io.github.leofle.cleanlock --section right
 omarchy restart shell
 ```
 
+## Linux input access
+
+This plugin requires Omarchy with Hyprland's Lua `hl.device` API. It does not
+run natively on Windows or macOS; Super is the Windows-logo key on PC keyboards.
+
+Dependencies: Bash, Python 3, jq, coreutils, systemd/udev, dbus-monitor,
+Polkit (`pkexec`), libnotify, and the Omarchy shell/CLI. These are normally
+provided by Omarchy.
+
+Run once after installation:
+
+```bash
+~/.config/omarchy/plugins/io.github.leofle.cleanlock/bin/cleanlock setup-input
+```
+
+Approve the administrator prompts. This installs a udev rule granting the active
+local session access to keyboard input devices (including typed keys).
+The standard uaccess ACL grants read/write device access; the monitor opens
+devices read-only.
+It does not add your user to the `input` group. Locking refuses to proceed if
+no Super-capable keyboard is readable. To revoke access, remove
+`/etc/udev/rules.d/70-cleanlock-input.rules` as administrator and reboot.
+
 ## Unlock
 
-Hold the **Super / Windows** key for **5 seconds**.
+Hold **one Super / Windows key** for **5 seconds**.
 
 (Right Super also works on dual-Super keyboards. Copilot-key PCs are fine — you do not need Right Super.)
 
