@@ -99,23 +99,6 @@ def open_keyboards() -> list[tuple[int, str]]:
     return fds
 
 
-def show_second(second: int) -> None:
-    """OSD tick for second 1..5 — long enough to read while holding."""
-    os.spawnlp(
-        os.P_NOWAIT,
-        "omarchy-osd",
-        "omarchy-osd",
-        "-i",
-        "keyboard",
-        "-m",
-        f"Super hold  {second} / {HOLD_SECONDS}",
-        "-p",
-        str(int((second / HOLD_SECONDS) * 100)),
-        "-d",
-        "1200",
-    )
-
-
 def unlock() -> None:
     plugin_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanlock")
     os.spawnl(os.P_WAIT, plugin_bin, plugin_bin, "unlock")
@@ -174,8 +157,8 @@ def main() -> int:
                     second = int(elapsed) + 1
 
                 if second != last_second_shown:
+                    # Progress drives the fullscreen overlay only (no bottom OSD).
                     write_progress_seconds(second)
-                    show_second(second)
                     last_second_shown = second
 
                 if elapsed >= HOLD_SECONDS:
