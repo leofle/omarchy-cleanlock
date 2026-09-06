@@ -23,6 +23,13 @@ Hold **Left Super + Right Super** together for **5 seconds**.
 
 Detected from the raw input device, so it still works after Hyprland has disabled the keyboard.
 
+## Safety
+
+While Clean Lock is active:
+
+- **Idle sleep/lock is inhibited** (so wiping keys cannot idle-lock or hibernate the machine)
+- If the **session locks** or the system is about to **sleep/hibernate** anyway, inputs are **force-unlocked** so you can type your password
+
 ## Bar widget
 
 1. Click the keyboard icon on the bar

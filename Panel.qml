@@ -106,7 +106,7 @@ Panel {
           color: Qt.darker(root.foreground, 1.4)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          text: "Unlock: hold Left Super + Right Super for 5 seconds."
+          text: "Unlock: hold Left Super + Right Super for 5 seconds. Sleep/lock are inhibited while cleaning."
         }
 
         PanelSeparator { width: parent.width }

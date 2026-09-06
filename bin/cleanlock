@@ -1,18 +1,23 @@
 #!/bin/bash
-# Backend for fleo.cleanlock — disable keyboard and/or trackpad for cleaning.
+# Backend for Clean Lock — disable keyboard and/or trackpad for cleaning.
 set -euo pipefail
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/cleanlock"
 STATE_FILE="$STATE_DIR/locked.json"
 CHORD_PID_FILE="$STATE_DIR/chord.pid"
+GUARD_PID_FILE="$STATE_DIR/guard.pid"
 PROGRESS_FILE="$STATE_DIR/chord-progress"
-PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+STAY_AWAKE_OWNED="$STATE_DIR/stay-awake-owned"
+# Resolve through ~/.local/bin symlinks so helper scripts are found.
+SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+PLUGIN_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)"
+SILENT=${CLEANLOCK_SILENT:-0}
 
 mkdir -p "$STATE_DIR"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: cleanlock <lock-keyboard|lock-trackpad|lock-both|unlock|status|chord-start|chord-stop>
+Usage: cleanlock <lock-keyboard|lock-trackpad|lock-both|unlock|status|chord-start|chord-stop|guard-start|guard-stop>
 EOF
 }
 
@@ -27,7 +32,7 @@ set_enabled() {
   local name=$1 enabled=$2
   local quoted
   quoted=$(quote_lua "$name")
-  hyprctl eval "hl.device({ name = \"$quoted\", enabled = $enabled })" >/dev/null
+  hyprctl eval "hl.device({ name = \"$quoted\", enabled = $enabled })" >/dev/null 2>&1 || true
 }
 
 list_keyboards() {
@@ -45,7 +50,6 @@ list_keyboards() {
 }
 
 list_trackpads() {
-  # Prefer Omarchy's helper when present, else Hyprland mice that look like trackpads.
   if command -v omarchy-hw-touchpad >/dev/null 2>&1; then
     local name
     name=$(omarchy-hw-touchpad 2>/dev/null || true)
@@ -73,23 +77,75 @@ read_state() {
   fi
 }
 
-chord_stop() {
-  if [[ -f $CHORD_PID_FILE ]]; then
+kill_pidfile() {
+  local file=$1
+  if [[ -f $file ]]; then
     local pid
-    pid=$(cat "$CHORD_PID_FILE" 2>/dev/null || true)
-    if [[ -n ${pid:-} ]] && kill -0 "$pid" 2>/dev/null; then
+    pid=$(cat "$file" 2>/dev/null || true)
+    if [[ -n ${pid:-} ]]; then
       kill "$pid" 2>/dev/null || true
+      # May not be our child; never fail the lock/unlock under set -e.
       wait "$pid" 2>/dev/null || true
     fi
-    rm -f "$CHORD_PID_FILE"
+    rm -f "$file"
   fi
+  return 0
+}
+
+chord_stop() {
+  kill_pidfile "$CHORD_PID_FILE"
   rm -f "$PROGRESS_FILE"
+  return 0
 }
 
 chord_start() {
   chord_stop
-  nohup "$PLUGIN_DIR/bin/cleanlock-chord" >/dev/null 2>&1 &
+  nohup python3 "$PLUGIN_DIR/bin/cleanlock-chord" >>"$STATE_DIR/chord.log" 2>&1 &
   echo $! >"$CHORD_PID_FILE"
+  return 0
+}
+
+guard_stop() {
+  kill_pidfile "$GUARD_PID_FILE"
+  return 0
+}
+
+guard_start() {
+  guard_stop
+  nohup python3 "$PLUGIN_DIR/bin/cleanlock-guard" >>"$STATE_DIR/guard.log" 2>&1 &
+  echo $! >"$GUARD_PID_FILE"
+  return 0
+}
+release_stay_awake_if_owned() {
+  if [[ -f $STAY_AWAKE_OWNED ]]; then
+    rm -f "$STAY_AWAKE_OWNED"
+    omarchy-toggle-idle allow-idle >/dev/null 2>&1 || true
+  fi
+}
+
+notify_locked() {
+  local msg=$1
+  if [[ $SILENT == 1 ]]; then
+    return 0
+  fi
+  omarchy-osd -i keyboard -m "$msg — hold both Super keys 5s to unlock" 2>/dev/null || true
+  notify-send -a CleanLock -i input-keyboard -u critical -t 0 \
+    "$msg" \
+    "Hold Left Super + Right Super for 5 seconds to unlock. Sleep/lock are inhibited while cleaning." >/dev/null 2>&1 || true
+}
+
+notify_unlocked() {
+  if [[ $SILENT == 1 ]]; then
+    return 0
+  fi
+  local reason=${CLEANLOCK_UNLOCK_REASON:-}
+  local body="Keyboard and trackpad are active again."
+  case "$reason" in
+    session-locked) body="Unlocked automatically so you can enter your password." ;;
+    prepare-for-sleep) body="Unlocked automatically before sleep/hibernate." ;;
+  esac
+  omarchy-osd -i keyboard -m "Inputs unlocked" 2>/dev/null || true
+  notify-send -a CleanLock -i input-keyboard "Unlocked" "$body" -t 4000 >/dev/null 2>&1 || true
 }
 
 lock_devices() {
@@ -125,11 +181,11 @@ lock_devices() {
     fi
     if ((${#tps[@]} == 0)); then
       echo "No trackpad found" >&2
-      # If we already locked keyboard in this call, still persist kb and start chord
       if ((want_kb)); then
-        write_state "$(printf '%s\n' "${kbs[@]}" | jq -R . | jq -s .)" '[]'
+        write_state "$(printf '%s\n' "${kbs[@]}" | jq -R . | jq -s -c 'map(select(length>0))')" '[]'
         chord_start
-        omarchy-osd -i keyboard -m "Keyboard locked (no trackpad found)" 2>/dev/null || true
+        guard_start
+        notify_locked "Keyboard locked (no trackpad found)"
         exit 0
       fi
       exit 1
@@ -147,20 +203,23 @@ lock_devices() {
   tp_json=$(printf '%s\n' "${tps[@]}" | jq -R . | jq -s -c 'map(select(length>0))')
   write_state "$kb_json" "$tp_json"
   chord_start
+  guard_start
 
   local msg=
   if ((want_kb && want_tp)); then msg="Keyboard + trackpad locked"
   elif ((want_kb)); then msg="Keyboard locked"
   else msg="Trackpad locked"
   fi
-  omarchy-osd -i keyboard -m "$msg — hold both Super keys 5s to unlock" 2>/dev/null || true
-  notify-send -a CleanLock -i input-keyboard -u critical -t 0 \
-    "$msg" \
-    "Hold Left Super + Right Super for 5 seconds to unlock." >/dev/null 2>&1 || true
+  notify_locked "$msg"
 }
 
 unlock_all() {
   chord_stop
+  # When unlock is requested by cleanlock-guard itself, do not kill the guard
+  # mid-flight — it will exit after unlock returns.
+  if [[ ${CLEANLOCK_FROM_GUARD:-0} != 1 ]]; then
+    guard_stop
+  fi
   local state
   state=$(read_state)
   while IFS= read -r name; do
@@ -168,8 +227,8 @@ unlock_all() {
     set_enabled "$name" true
   done < <(jq -r '.keyboard[]?, .trackpad[]?' <<<"$state")
   rm -f "$STATE_FILE"
-  omarchy-osd -i keyboard -m "Inputs unlocked" 2>/dev/null || true
-  notify-send -a CleanLock -i input-keyboard "Unlocked" "Keyboard and trackpad are active again." -t 3000 >/dev/null 2>&1 || true
+  release_stay_awake_if_owned
+  notify_unlocked
 }
 
 status_json() {
@@ -179,15 +238,19 @@ status_json() {
   tp_n=$(jq '.trackpad | length' <<<"$state")
   local progress=0
   [[ -f $PROGRESS_FILE ]] && progress=$(cat "$PROGRESS_FILE" 2>/dev/null || echo 0)
+  local inhibiting=false
+  [[ -f $GUARD_PID_FILE ]] && kill -0 "$(cat "$GUARD_PID_FILE" 2>/dev/null)" 2>/dev/null && inhibiting=true
   jq -nc --argjson state "$state" --argjson progress "${progress:-0}" \
-    --argjson keyboardLocked "$kb_n" --argjson trackpadLocked "$tp_n" '
+    --argjson keyboardLocked "$kb_n" --argjson trackpadLocked "$tp_n" \
+    --argjson inhibiting "$inhibiting" '
     {
       keyboard: $state.keyboard,
       trackpad: $state.trackpad,
       keyboardLocked: ($keyboardLocked > 0),
       trackpadLocked: ($trackpadLocked > 0),
       locked: (($keyboardLocked > 0) or ($trackpadLocked > 0)),
-      chordProgress: ($progress|tonumber)
+      chordProgress: ($progress|tonumber),
+      inhibitingSleep: $inhibiting
     }'
 }
 
@@ -200,5 +263,7 @@ case "$cmd" in
   status) status_json ;;
   chord-start) chord_start ;;
   chord-stop) chord_stop ;;
+  guard-start) guard_start ;;
+  guard-stop) guard_stop ;;
   *) usage; exit 1 ;;
 esac
