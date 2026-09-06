@@ -8,16 +8,28 @@ CHORD_PID_FILE="$STATE_DIR/chord.pid"
 GUARD_PID_FILE="$STATE_DIR/guard.pid"
 PROGRESS_FILE="$STATE_DIR/chord-progress"
 STAY_AWAKE_OWNED="$STATE_DIR/stay-awake-owned"
-# Resolve through ~/.local/bin symlinks so helper scripts are found.
+PLUGIN_ID="io.github.leofle.cleanlock"
+
+# Resolve through ~/.local/bin symlinks; fall back to the known plugin path.
 SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
-PLUGIN_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)"
+SCRIPT_BIN_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+PLUGIN_DIR="$(cd -- "$SCRIPT_BIN_DIR/.." && pwd)"
+if [[ ! -x $PLUGIN_DIR/bin/cleanlock-chord ]]; then
+  if [[ -x $SCRIPT_BIN_DIR/cleanlock-chord ]]; then
+    PLUGIN_DIR="$(cd -- "$SCRIPT_BIN_DIR/.." && pwd)"
+  elif [[ -x $HOME/.config/omarchy/plugins/$PLUGIN_ID/bin/cleanlock-chord ]]; then
+    PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+  fi
+fi
+CHORD_BIN="$PLUGIN_DIR/bin/cleanlock-chord"
+GUARD_BIN="$PLUGIN_DIR/bin/cleanlock-guard"
 SILENT=${CLEANLOCK_SILENT:-0}
 
 mkdir -p "$STATE_DIR"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: cleanlock <lock-keyboard|lock-trackpad|lock-both|unlock|status|chord-start|chord-stop|guard-start|guard-stop>
+Usage: cleanlock <lock-keyboard|lock-trackpad|lock-both|unlock|status|diagnose|chord-start|chord-stop|guard-start|guard-stop>
 EOF
 }
 
@@ -100,7 +112,16 @@ chord_stop() {
 
 chord_start() {
   chord_stop
-  nohup python3 "$PLUGIN_DIR/bin/cleanlock-chord" >>"$STATE_DIR/chord.log" 2>&1 &
+  if [[ ! -f $CHORD_BIN ]]; then
+    echo "cleanlock: missing chord helper at $CHORD_BIN" >>"$STATE_DIR/chord.log"
+    echo "cleanlock: missing chord helper at $CHORD_BIN" >&2
+    return 1
+  fi
+  {
+    echo "---- chord-start $(date -Iseconds) plugin=$PLUGIN_DIR"
+    echo "helper=$CHORD_BIN"
+  } >>"$STATE_DIR/chord.log"
+  nohup python3 "$CHORD_BIN" >>"$STATE_DIR/chord.log" 2>&1 &
   echo $! >"$CHORD_PID_FILE"
   return 0
 }
@@ -112,9 +133,35 @@ guard_stop() {
 
 guard_start() {
   guard_stop
-  nohup python3 "$PLUGIN_DIR/bin/cleanlock-guard" >>"$STATE_DIR/guard.log" 2>&1 &
+  if [[ ! -f $GUARD_BIN ]]; then
+    echo "cleanlock: missing guard helper at $GUARD_BIN" >>"$STATE_DIR/guard.log"
+    echo "cleanlock: missing guard helper at $GUARD_BIN" >&2
+    return 1
+  fi
+  nohup python3 "$GUARD_BIN" >>"$STATE_DIR/guard.log" 2>&1 &
   echo $! >"$GUARD_PID_FILE"
   return 0
+}
+
+diagnose() {
+  echo "pluginDir=$PLUGIN_DIR"
+  echo "chordBin=$CHORD_BIN ($( [[ -f $CHORD_BIN ]] && echo ok || echo MISSING ))"
+  echo "guardBin=$GUARD_BIN ($( [[ -f $GUARD_BIN ]] && echo ok || echo MISSING ))"
+  echo "scriptPath=$SCRIPT_PATH"
+  echo "user=$(id -un) groups=$(id -Gn)"
+  echo "inputDevicePerms:"
+  ls -l /dev/input/event* 2>/dev/null | head -8 || echo "  (none)"
+  echo "hyprlandKeyboards:"
+  list_keyboards | sed 's/^/  /' || true
+  echo "hyprlandTrackpads:"
+  list_trackpads | sed 's/^/  /' || true
+  echo "state=$(read_state)"
+  echo "chordPid=$(cat "$CHORD_PID_FILE" 2>/dev/null || echo none)"
+  echo "guardPid=$(cat "$GUARD_PID_FILE" 2>/dev/null || echo none)"
+  echo "--- chord.log (tail) ---"
+  tail -n 40 "$STATE_DIR/chord.log" 2>/dev/null || echo "(empty)"
+  echo "--- guard.log (tail) ---"
+  tail -n 20 "$STATE_DIR/guard.log" 2>/dev/null || echo "(empty)"
 }
 release_stay_awake_if_owned() {
   if [[ -f $STAY_AWAKE_OWNED ]]; then
@@ -128,10 +175,10 @@ notify_locked() {
   if [[ $SILENT == 1 ]]; then
     return 0
   fi
-  omarchy-osd -i keyboard -m "$msg — hold both Super keys 5s to unlock" 2>/dev/null || true
+  omarchy-osd -i keyboard -m "$msg — hold Super/Win 5s to unlock" 2>/dev/null || true
   notify-send -a CleanLock -i input-keyboard -u critical -t 0 \
     "$msg" \
-    "Hold Left Super + Right Super for 5 seconds to unlock. Sleep/lock are inhibited while cleaning." >/dev/null 2>&1 || true
+    "Hold the Super / Windows key for 5 seconds to unlock. Sleep/lock are inhibited while cleaning." >/dev/null 2>&1 || true
 }
 
 notify_unlocked() {
@@ -261,6 +308,7 @@ case "$cmd" in
   lock-both) lock_devices 1 1 ;;
   unlock) unlock_all ;;
   status) status_json ;;
+  diagnose) diagnose ;;
   chord-start) chord_start ;;
   chord-stop) chord_stop ;;
   guard-start) guard_start ;;

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Watch for the unlock chord held for 5 seconds, then unlock.
+"""Watch for Super/Windows held for 5 seconds, then unlock.
 
 Reads /dev/input directly so it still works after Hyprland disables the keyboard.
 Progress is reported as whole seconds 1..5 (not a percentage).
 
-Unlock chords:
-  - Classic: Left Super + Right Super held together for 5s
-  - Copilot keyboards (no Right Super): hold Left Super, tap Copilot once
-    while Left Super is down, then keep holding Left Super for 5s.
+Unlock: hold Left Super / Windows for 5 seconds.
 
-The Copilot key is usually hard-wired as Meta+Shift+F23 and often pulses
-(down then immediate up), so F23 is latched while Left Super stays held.
+Why not Left+Right Super?
+  Many PC keyboards (e.g. Dell XPS) put a Copilot key where Right Super was.
+  Copilot usually pulses Meta+Shift+F23 and is not holdable as Right Meta, so a
+  dual-Super chord never arms. Holding Left Super alone works everywhere.
+
+Copilot still synthesizes a brief Left Meta release; we ignore that pulse so a
+physically held Win key keeps the timer running.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import struct
 import time
 
 EV_KEY = 0x01
+KEY_LEFTSHIFT = 42
 KEY_LEFTMETA = 125
 KEY_RIGHTMETA = 126
 KEY_F23 = 193
@@ -32,10 +35,14 @@ EVENT_FMT = "llHHi"
 EVENT_SIZE = struct.calcsize(EVENT_FMT)
 HOLD_SECONDS = 5
 
-# EVIOCGBIT(EV_KEY, 64) — 512 key bits (covers F23; ASSISTANT needs a larger buffer)
+
 def _eviocgbit_key(length: int = 128) -> int:
     nr = 0x20 + EV_KEY
     return (2 << 30) | (ord("E") << 8) | nr | (length << 16)
+
+
+def _eviocgname(length: int = 256) -> int:
+    return (2 << 30) | (ord("E") << 8) | 0x06 | (length << 16)
 
 
 STATE_DIR = os.path.join(
@@ -45,6 +52,10 @@ STATE_DIR = os.path.join(
 )
 PROGRESS_FILE = os.path.join(STATE_DIR, "chord-progress")
 STATE_FILE = os.path.join(STATE_DIR, "locked.json")
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
 
 
 def write_progress_seconds(seconds: int) -> None:
@@ -74,8 +85,16 @@ def still_locked() -> bool:
         return False
 
 
-def device_has_unlock_keys(fd: int) -> bool:
-    """Prefer keyboards that report Left Meta (with or without Right Meta / F23)."""
+def device_name(fd: int) -> str:
+    buf = array.array("B", [0] * 256)
+    try:
+        fcntl.ioctl(fd, _eviocgname(len(buf)), buf)
+        return bytes(buf).split(b"\0", 1)[0].decode("utf-8", "replace") or "?"
+    except OSError:
+        return "?"
+
+
+def device_has_left_meta(fd: int) -> bool:
     buf = array.array("B", [0] * 128)
     try:
         fcntl.ioctl(fd, _eviocgbit_key(len(buf)), buf)
@@ -87,56 +106,64 @@ def device_has_unlock_keys(fd: int) -> bool:
             return False
         return bool(buf[code // 8] & (1 << (code % 8)))
 
-    if not has(KEY_LEFTMETA):
-        return False
-    # Classic dual-Super, Copilot (F23), or Left-Meta-only boards (fallback path).
-    return True
+    return has(KEY_LEFTMETA)
 
 
 def open_keyboards() -> list[tuple[int, str]]:
     fds: list[tuple[int, str]] = []
+    errors: list[str] = []
     for path in sorted(glob.glob("/dev/input/event*")):
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-        except OSError:
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
             continue
-        if device_has_unlock_keys(fd):
+        if device_has_left_meta(fd):
+            name = device_name(fd)
+            log(f"watching {path} ({name})")
             fds.append((fd, path))
         else:
             os.close(fd)
-    # Fallback: if capability probe fails everywhere, watch all readable nodes.
     if not fds:
+        for line in errors[:12]:
+            log(f"open failed: {line}")
+        log("no Left-Meta keyboards found; watching all readable event nodes")
         for path in sorted(glob.glob("/dev/input/event*")):
             try:
                 fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
             except OSError:
                 continue
+            log(f"fallback watch {path} ({device_name(fd)})")
             fds.append((fd, path))
     return fds
 
 
 def unlock() -> None:
     plugin_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanlock")
+    if not os.path.isfile(plugin_bin):
+        plugin_bin = os.path.expanduser(
+            "~/.config/omarchy/plugins/io.github.leofle.cleanlock/bin/cleanlock"
+        )
+    log(f"unlock via {plugin_bin}")
     os.spawnl(os.P_WAIT, plugin_bin, plugin_bin, "unlock")
 
 
-def is_copilot_code(code: int) -> bool:
-    return code in (KEY_F23, KEY_ASSISTANT)
+def is_copilot_pulse_code(code: int) -> bool:
+    return code in (KEY_F23, KEY_ASSISTANT, KEY_LEFTSHIFT)
 
 
 def main() -> int:
     os.makedirs(STATE_DIR, exist_ok=True)
     clear_progress()
+    log(f"cleanlock-chord start pid={os.getpid()} hold={HOLD_SECONDS}s")
     fds = open_keyboards()
     if not fds:
+        log("fatal: cannot open any /dev/input/event* (permission?)")
         return 1
 
     left = False
     right = False
-    # Copilot pulses Meta+Shift+F23 (often with an immediate Meta release).
-    # Latch F23/Assistant while Left Super stays down, and briefly ignore the
-    # synthetic Left Meta up so a held Win key is not cleared by the pulse.
-    copilot_latched = False
+    # Copilot (and some firmwares) pulse Meta+Shift+F23 with a synthetic Meta up.
     suppress_left_release_until = 0.0
     hold_started: float | None = None
     last_second_shown = 0
@@ -154,7 +181,6 @@ def main() -> int:
                         break
                     if not data:
                         break
-                    # Process complete events only; keep alignment.
                     offset = 0
                     while offset + EVENT_SIZE <= len(data):
                         chunk = data[offset : offset + EVENT_SIZE]
@@ -162,41 +188,35 @@ def main() -> int:
                         _sec, _usec, etype, code, value = struct.unpack(EVENT_FMT, chunk)
                         if etype != EV_KEY:
                             continue
-                        # value: 0 release, 1 press, 2 repeat — treat repeat as still down
                         if code == KEY_LEFTMETA:
                             if value != 0:
                                 left = True
                             elif now < suppress_left_release_until:
-                                # Synthetic release from Copilot chord — keep left.
                                 pass
                             else:
                                 left = False
-                                copilot_latched = False
                         elif code == KEY_RIGHTMETA:
                             right = value != 0
-                        elif is_copilot_code(code) and value == 1:
-                            # Arm only while Left Super is already held (avoids
-                            # "tap Copilot earlier, then hold Win" accidents).
-                            if left:
-                                copilot_latched = True
-                                suppress_left_release_until = now + 0.3
+                        elif is_copilot_pulse_code(code) and value == 1 and left:
+                            suppress_left_release_until = now + 0.35
 
-            chord_active = left and (right or copilot_latched)
+            # Hold Left Super / Windows (or Right Super on dual-Super boards).
+            chord_active = left or right
 
             if chord_active:
                 if hold_started is None:
                     hold_started = now
                     last_second_shown = 0
                     write_progress_seconds(0)
+                    log("hold started")
 
                 elapsed = now - hold_started
-                # Completed whole seconds: 1 after 1s, …, 5 after 5s.
-                # Showing "5" one second early made unlock feel like a 6-count.
                 second = min(HOLD_SECONDS, int(elapsed))
 
                 if second != last_second_shown and second > 0:
                     write_progress_seconds(second)
                     last_second_shown = second
+                    log(f"progress {second}/{HOLD_SECONDS}")
 
                 if elapsed >= HOLD_SECONDS:
                     write_progress_seconds(HOLD_SECONDS)
@@ -207,6 +227,7 @@ def main() -> int:
                     hold_started = None
                     last_second_shown = 0
                     clear_progress()
+                    log("hold cancelled")
     finally:
         clear_progress()
         for fd, _ in fds:
@@ -214,8 +235,13 @@ def main() -> int:
                 os.close(fd)
             except OSError:
                 pass
+        log("cleanlock-chord exit")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:  # noqa: BLE001 — always leave a breadcrumb in chord.log
+        log(f"fatal: {exc!r}")
+        raise
