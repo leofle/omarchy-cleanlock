@@ -81,7 +81,7 @@ Panel {
               if (service.keyboardLocked) parts.push("keyboard")
               if (service.trackpadLocked) parts.push("trackpad")
               var held = service.chordProgress > 0
-                ? (" · holding Super " + service.chordProgress + "%")
+                ? (" · Super " + service.chordProgress + "/5")
                 : ""
               return "Locked: " + parts.join(" + ") + held
             }

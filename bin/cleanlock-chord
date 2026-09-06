@@ -2,10 +2,13 @@
 """Watch for Left Super + Right Super held for 5 seconds, then unlock.
 
 Reads /dev/input directly so it still works after Hyprland disables the keyboard.
+Progress is reported as whole seconds 1..5 (not a percentage).
 """
 
 from __future__ import annotations
 
+import array
+import fcntl
 import glob
 import os
 import select
@@ -13,12 +16,17 @@ import struct
 import time
 
 EV_KEY = 0x01
-EV_SYN = 0x00
 KEY_LEFTMETA = 125
 KEY_RIGHTMETA = 126
 EVENT_FMT = "llHHi"
 EVENT_SIZE = struct.calcsize(EVENT_FMT)
-HOLD_SECONDS = 5.0
+HOLD_SECONDS = 5
+
+# EVIOCGBIT(EV_KEY, 64) — 512 key bits
+def _eviocgbit_key(length: int = 64) -> int:
+    nr = 0x20 + EV_KEY
+    return (2 << 30) | (ord("E") << 8) | nr | (length << 16)
+
 
 STATE_DIR = os.path.join(
     os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
@@ -29,11 +37,12 @@ PROGRESS_FILE = os.path.join(STATE_DIR, "chord-progress")
 STATE_FILE = os.path.join(STATE_DIR, "locked.json")
 
 
-def write_progress(value: float) -> None:
+def write_progress_seconds(seconds: int) -> None:
+    """Persist 0..5 for the panel / status JSON."""
     os.makedirs(STATE_DIR, exist_ok=True)
     tmp = PROGRESS_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(str(int(max(0, min(100, round(value))))))
+        fh.write(str(max(0, min(HOLD_SECONDS, int(seconds)))))
     os.replace(tmp, PROGRESS_FILE)
 
 
@@ -55,6 +64,19 @@ def still_locked() -> bool:
         return False
 
 
+def device_has_meta_keys(fd: int) -> bool:
+    buf = array.array("B", [0] * 64)
+    try:
+        fcntl.ioctl(fd, _eviocgbit_key(len(buf)), buf)
+    except OSError:
+        return False
+
+    def has(code: int) -> bool:
+        return bool(buf[code // 8] & (1 << (code % 8)))
+
+    return has(KEY_LEFTMETA) and has(KEY_RIGHTMETA)
+
+
 def open_keyboards() -> list[tuple[int, str]]:
     fds: list[tuple[int, str]] = []
     for path in sorted(glob.glob("/dev/input/event*")):
@@ -62,9 +84,34 @@ def open_keyboards() -> list[tuple[int, str]]:
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
             continue
-        # Prefer devices that advertise meta keys; keep all readable as fallback.
-        fds.append((fd, path))
+        if device_has_meta_keys(fd):
+            fds.append((fd, path))
+        else:
+            os.close(fd)
+    # Fallback: if capability probe fails everywhere, watch all readable nodes.
+    if not fds:
+        for path in sorted(glob.glob("/dev/input/event*")):
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            fds.append((fd, path))
     return fds
+
+
+def show_second(second: int) -> None:
+    """OSD tick for second 1..5."""
+    os.spawnlp(
+        os.P_NOWAIT,
+        "omarchy-osd",
+        "omarchy-osd",
+        "-i",
+        "keyboard",
+        "-m",
+        f"Hold both Super keys… {second}/{HOLD_SECONDS}",
+        "-p",
+        str(int((second / HOLD_SECONDS) * 100)),
+    )
 
 
 def unlock() -> None:
@@ -82,58 +129,60 @@ def main() -> int:
     left = False
     right = False
     hold_started: float | None = None
-    last_progress = -1
+    last_second_shown = 0
 
     try:
         while still_locked():
-            readable, _, _ = select.select([fd for fd, _ in fds], [], [], 0.1)
+            readable, _, _ = select.select([fd for fd, _ in fds], [], [], 0.05)
             now = time.monotonic()
 
             for fd in readable:
                 while True:
                     try:
-                        data = os.read(fd, EVENT_SIZE)
+                        data = os.read(fd, EVENT_SIZE * 8)
                     except BlockingIOError:
                         break
-                    if len(data) < EVENT_SIZE:
+                    if not data:
                         break
-                    _sec, _usec, etype, code, value = struct.unpack(EVENT_FMT, data)
-                    if etype != EV_KEY:
-                        continue
-                    if code == KEY_LEFTMETA:
-                        left = value != 0
-                    elif code == KEY_RIGHTMETA:
-                        right = value != 0
+                    # Process complete events only; keep alignment.
+                    offset = 0
+                    while offset + EVENT_SIZE <= len(data):
+                        chunk = data[offset : offset + EVENT_SIZE]
+                        offset += EVENT_SIZE
+                        _sec, _usec, etype, code, value = struct.unpack(EVENT_FMT, chunk)
+                        if etype != EV_KEY:
+                            continue
+                        # value: 0 release, 1 press, 2 repeat — treat repeat as still down
+                        if code == KEY_LEFTMETA:
+                            left = value != 0
+                        elif code == KEY_RIGHTMETA:
+                            right = value != 0
 
             if left and right:
                 if hold_started is None:
                     hold_started = now
+                    last_second_shown = 0
+                    write_progress_seconds(0)
+
                 elapsed = now - hold_started
-                progress = min(100.0, (elapsed / HOLD_SECONDS) * 100.0)
-                if int(progress) != last_progress:
-                    write_progress(progress)
-                    last_progress = int(progress)
-                    # Lightweight OSD ticks every ~20%.
-                    if last_progress in {20, 40, 60, 80}:
-                        os.spawnlp(
-                            os.P_NOWAIT,
-                            "omarchy-osd",
-                            "omarchy-osd",
-                            "-i",
-                            "keyboard",
-                            "-m",
-                            f"Keep holding Super… {last_progress}%",
-                            "-p",
-                            str(last_progress),
-                        )
+                # 0.0–0.999s → 1, 1.0–1.999s → 2, …, >=5s → 5
                 if elapsed >= HOLD_SECONDS:
-                    write_progress(100)
+                    second = HOLD_SECONDS
+                else:
+                    second = int(elapsed) + 1
+
+                if second != last_second_shown:
+                    write_progress_seconds(second)
+                    show_second(second)
+                    last_second_shown = second
+
+                if elapsed >= HOLD_SECONDS:
                     unlock()
                     return 0
             else:
                 if hold_started is not None:
                     hold_started = None
-                    last_progress = -1
+                    last_second_shown = 0
                     clear_progress()
     finally:
         clear_progress()
