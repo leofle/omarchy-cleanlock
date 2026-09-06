@@ -70,8 +70,9 @@ Item {
     }
   }
 
+  // Poll often while locked so the fullscreen overlay counter stays smooth.
   Timer {
-    interval: 200
+    interval: 100
     running: root.locked
     repeat: true
     onTriggered: root.refresh()

@@ -19,10 +19,20 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color barIconColor: (!!service && service.locked) ? urgent : barForeground
 
+  // Per-monitor identity for the fullscreen lock overlay.
+  readonly property var currentScreen: QsWindow.window ? QsWindow.window.screen : null
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
   onOpenedChanged: if (opened && service) service.refresh()
+
+  LockOverlay {
+    service: root.service
+    screen: root.currentScreen
+    foreground: root.foreground
+    fontFamily: root.fontFamily
+  }
 
   BarIconButton {
     id: button
@@ -107,7 +117,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
           font.bold: true
-          text: "Super hold  " + service.chordProgress + " / 5"
+          text: "Super hold  " + (service ? service.chordProgress : 0) + " / 5"
         }
 
         Text {
@@ -156,7 +166,7 @@ Panel {
 
         ActionRow {
           label: "Unlock now"
-          detail: service && service.chordProgress > 0
+          detail: (service && service.chordProgress > 0)
             ? ("Holding Super " + service.chordProgress + "/5")
             : "Or hold both Super keys"
           iconText: "󰌿"

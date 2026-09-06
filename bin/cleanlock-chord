@@ -100,7 +100,7 @@ def open_keyboards() -> list[tuple[int, str]]:
 
 
 def show_second(second: int) -> None:
-    """OSD tick for second 1..5."""
+    """OSD tick for second 1..5 — long enough to read while holding."""
     os.spawnlp(
         os.P_NOWAIT,
         "omarchy-osd",
@@ -108,9 +108,11 @@ def show_second(second: int) -> None:
         "-i",
         "keyboard",
         "-m",
-        f"Hold both Super keys… {second}/{HOLD_SECONDS}",
+        f"Super hold  {second} / {HOLD_SECONDS}",
         "-p",
         str(int((second / HOLD_SECONDS) * 100)),
+        "-d",
+        "1200",
     )
 
 
