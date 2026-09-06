@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Watch for Left Super + Right Super held for 5 seconds, then unlock.
+
+Reads /dev/input directly so it still works after Hyprland disables the keyboard.
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+import select
+import struct
+import time
+
+EV_KEY = 0x01
+EV_SYN = 0x00
+KEY_LEFTMETA = 125
+KEY_RIGHTMETA = 126
+EVENT_FMT = "llHHi"
+EVENT_SIZE = struct.calcsize(EVENT_FMT)
+HOLD_SECONDS = 5.0
+
+STATE_DIR = os.path.join(
+    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+    "omarchy",
+    "cleanlock",
+)
+PROGRESS_FILE = os.path.join(STATE_DIR, "chord-progress")
+STATE_FILE = os.path.join(STATE_DIR, "locked.json")
+
+
+def write_progress(value: float) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = PROGRESS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(str(int(max(0, min(100, round(value))))))
+    os.replace(tmp, PROGRESS_FILE)
+
+
+def clear_progress() -> None:
+    try:
+        os.remove(PROGRESS_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def still_locked() -> bool:
+    try:
+        import json
+
+        with open(STATE_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return bool(data.get("keyboard") or data.get("trackpad"))
+    except (FileNotFoundError, ValueError, TypeError):
+        return False
+
+
+def open_keyboards() -> list[tuple[int, str]]:
+    fds: list[tuple[int, str]] = []
+    for path in sorted(glob.glob("/dev/input/event*")):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+        # Prefer devices that advertise meta keys; keep all readable as fallback.
+        fds.append((fd, path))
+    return fds
+
+
+def unlock() -> None:
+    plugin_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanlock")
+    os.spawnl(os.P_WAIT, plugin_bin, plugin_bin, "unlock")
+
+
+def main() -> int:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    clear_progress()
+    fds = open_keyboards()
+    if not fds:
+        return 1
+
+    left = False
+    right = False
+    hold_started: float | None = None
+    last_progress = -1
+
+    try:
+        while still_locked():
+            readable, _, _ = select.select([fd for fd, _ in fds], [], [], 0.1)
+            now = time.monotonic()
+
+            for fd in readable:
+                while True:
+                    try:
+                        data = os.read(fd, EVENT_SIZE)
+                    except BlockingIOError:
+                        break
+                    if len(data) < EVENT_SIZE:
+                        break
+                    _sec, _usec, etype, code, value = struct.unpack(EVENT_FMT, data)
+                    if etype != EV_KEY:
+                        continue
+                    if code == KEY_LEFTMETA:
+                        left = value != 0
+                    elif code == KEY_RIGHTMETA:
+                        right = value != 0
+
+            if left and right:
+                if hold_started is None:
+                    hold_started = now
+                elapsed = now - hold_started
+                progress = min(100.0, (elapsed / HOLD_SECONDS) * 100.0)
+                if int(progress) != last_progress:
+                    write_progress(progress)
+                    last_progress = int(progress)
+                    # Lightweight OSD ticks every ~20%.
+                    if last_progress in {20, 40, 60, 80}:
+                        os.spawnlp(
+                            os.P_NOWAIT,
+                            "omarchy-osd",
+                            "omarchy-osd",
+                            "-i",
+                            "keyboard",
+                            "-m",
+                            f"Keep holding Super… {last_progress}%",
+                            "-p",
+                            str(last_progress),
+                        )
+                if elapsed >= HOLD_SECONDS:
+                    write_progress(100)
+                    unlock()
+                    return 0
+            else:
+                if hold_started is not None:
+                    hold_started = None
+                    last_progress = -1
+                    clear_progress()
+    finally:
+        clear_progress()
+        for fd, _ in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
