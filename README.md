@@ -8,13 +8,10 @@ Lock your **keyboard** and/or **trackpad** so you can wipe them without typing g
 omarchy plugin add https://github.com/leofle/omarchy-cleanlock.git --enable
 ```
 
-Or from a local checkout:
+Or from a local checkout (Omarchy requires a real copy, not a symlink):
 
 ```bash
-mkdir -p ~/.config/omarchy/plugins
-ln -sfn ~/Projects/omarchy-cleanlock ~/.config/omarchy/plugins/cleanlock
-omarchy plugin enable cleanlock --section right
-omarchy restart shell
+~/Projects/omarchy-cleanlock/sync-install.sh
 ```
 
 ## Unlock
