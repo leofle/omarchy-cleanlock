@@ -6,7 +6,7 @@
   "author": "fleo",
   "license": "MIT",
   "description": "Lock keyboard and/or trackpad for cleaning. Unlock by holding both Super keys for 5 seconds.",
-  "repository": "https://github.com/fleo/omarchy-cleanlock",
+  "repository": "https://github.com/leofle/omarchy-cleanlock",
   "kinds": ["service", "bar-widget"],
   "keepLoaded": true,
   "entryPoints": {

@@ -5,7 +5,7 @@ Lock your **keyboard** and/or **trackpad** so you can wipe them without typing g
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/fleo/omarchy-cleanlock.git --enable
+omarchy plugin add https://github.com/leofle/omarchy-cleanlock.git --enable
 ```
 
 Or from a local checkout:
