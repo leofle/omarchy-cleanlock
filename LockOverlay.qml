@@ -73,7 +73,7 @@ PanelWindow {
       Text {
         width: parent.width
         visible: !root.holding
-        text: "Hold Left Super + Right Super for 5 seconds to unlock"
+        text: "Hold both Super keys for 5s (or hold Win, tap Copilot, keep holding Win)"
         color: Qt.darker(root.foreground, 1.35)
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
@@ -95,7 +95,7 @@ PanelWindow {
       Text {
         width: parent.width
         visible: root.holding
-        text: "Keep holding both Super keys…"
+        text: "Keep holding…"
         color: Qt.darker(root.foreground, 1.35)
         font.family: root.fontFamily
         font.pixelSize: Style.font.body

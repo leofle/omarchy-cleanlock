@@ -118,7 +118,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
           font.bold: true
-          text: "Super hold  " + (s ? s.chordProgress : 0) + " / 5"
+          text: "Unlock hold  " + (s ? s.chordProgress : 0) + " / 5"
         }
 
         Text {
@@ -129,7 +129,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           text: (s && s.locked)
-            ? "Hold Left Super + Right Super for 5 seconds to unlock."
+            ? "Hold both Super keys for 5s — or hold Win, tap Copilot, keep holding Win."
             : "Sleep and lock are inhibited while cleaning."
         }
 
@@ -170,8 +170,8 @@ Panel {
           readonly property var s: root.service
           label: "Unlock now"
           detail: (s && s.chordProgress > 0)
-            ? ("Holding Super " + s.chordProgress + "/5")
-            : "Or hold both Super keys"
+            ? ("Holding unlock " + s.chordProgress + "/5")
+            : "Or hold Super / Win+Copilot"
           iconText: "󰌿"
           rowEnabled: !!(s && s.locked && !s.busy)
           onActivated: if (s) { s.unlock(); root.close() }

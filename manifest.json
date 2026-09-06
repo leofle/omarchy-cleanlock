@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.leofle.cleanlock",
   "name": "Clean Lock",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "author": "leofle",
   "license": "MIT",
-  "description": "Lock keyboard and/or trackpad for cleaning. Unlock by holding both Super keys for 5 seconds. Inhibits sleep/idle while active and auto-unlocks if the session locks.",
+  "description": "Lock keyboard and/or trackpad for cleaning. Unlock by holding both Super keys for 5s, or Win + Copilot on PC keyboards. Inhibits sleep/idle while active and auto-unlocks if the session locks.",
   "repository": "https://github.com/leofle/omarchy-cleanlock",
   "kinds": [
     "service",
@@ -18,7 +18,7 @@
   },
   "barWidget": {
     "displayName": "Clean Lock",
-    "description": "Lock keyboard/trackpad to clean them; hold both Super keys 5s to unlock",
+    "description": "Lock keyboard/trackpad to clean them; Super×2 or Win+Copilot 5s to unlock",
     "category": "Compositor",
     "allowMultiple": false,
     "defaultSection": "right"

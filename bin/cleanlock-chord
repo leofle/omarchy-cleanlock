@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Watch for Left Super + Right Super held for 5 seconds, then unlock.
+"""Watch for the unlock chord held for 5 seconds, then unlock.
 
 Reads /dev/input directly so it still works after Hyprland disables the keyboard.
 Progress is reported as whole seconds 1..5 (not a percentage).
+
+Unlock chords:
+  - Classic: Left Super + Right Super held together for 5s
+  - Copilot keyboards (no Right Super): hold Left Super, tap Copilot once
+    while Left Super is down, then keep holding Left Super for 5s.
+
+The Copilot key is usually hard-wired as Meta+Shift+F23 and often pulses
+(down then immediate up), so F23 is latched while Left Super stays held.
 """
 
 from __future__ import annotations
@@ -18,12 +26,14 @@ import time
 EV_KEY = 0x01
 KEY_LEFTMETA = 125
 KEY_RIGHTMETA = 126
+KEY_F23 = 193
+KEY_ASSISTANT = 0x247  # 583 — some stacks remap Copilot here
 EVENT_FMT = "llHHi"
 EVENT_SIZE = struct.calcsize(EVENT_FMT)
 HOLD_SECONDS = 5
 
-# EVIOCGBIT(EV_KEY, 64) — 512 key bits
-def _eviocgbit_key(length: int = 64) -> int:
+# EVIOCGBIT(EV_KEY, 64) — 512 key bits (covers F23; ASSISTANT needs a larger buffer)
+def _eviocgbit_key(length: int = 128) -> int:
     nr = 0x20 + EV_KEY
     return (2 << 30) | (ord("E") << 8) | nr | (length << 16)
 
@@ -64,17 +74,23 @@ def still_locked() -> bool:
         return False
 
 
-def device_has_meta_keys(fd: int) -> bool:
-    buf = array.array("B", [0] * 64)
+def device_has_unlock_keys(fd: int) -> bool:
+    """Prefer keyboards that report Left Meta (with or without Right Meta / F23)."""
+    buf = array.array("B", [0] * 128)
     try:
         fcntl.ioctl(fd, _eviocgbit_key(len(buf)), buf)
     except OSError:
         return False
 
     def has(code: int) -> bool:
+        if code // 8 >= len(buf):
+            return False
         return bool(buf[code // 8] & (1 << (code % 8)))
 
-    return has(KEY_LEFTMETA) and has(KEY_RIGHTMETA)
+    if not has(KEY_LEFTMETA):
+        return False
+    # Classic dual-Super, Copilot (F23), or Left-Meta-only boards (fallback path).
+    return True
 
 
 def open_keyboards() -> list[tuple[int, str]]:
@@ -84,7 +100,7 @@ def open_keyboards() -> list[tuple[int, str]]:
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
             continue
-        if device_has_meta_keys(fd):
+        if device_has_unlock_keys(fd):
             fds.append((fd, path))
         else:
             os.close(fd)
@@ -104,6 +120,10 @@ def unlock() -> None:
     os.spawnl(os.P_WAIT, plugin_bin, plugin_bin, "unlock")
 
 
+def is_copilot_code(code: int) -> bool:
+    return code in (KEY_F23, KEY_ASSISTANT)
+
+
 def main() -> int:
     os.makedirs(STATE_DIR, exist_ok=True)
     clear_progress()
@@ -113,6 +133,11 @@ def main() -> int:
 
     left = False
     right = False
+    # Copilot pulses Meta+Shift+F23 (often with an immediate Meta release).
+    # Latch F23/Assistant while Left Super stays down, and briefly ignore the
+    # synthetic Left Meta up so a held Win key is not cleared by the pulse.
+    copilot_latched = False
+    suppress_left_release_until = 0.0
     hold_started: float | None = None
     last_second_shown = 0
 
@@ -139,11 +164,26 @@ def main() -> int:
                             continue
                         # value: 0 release, 1 press, 2 repeat — treat repeat as still down
                         if code == KEY_LEFTMETA:
-                            left = value != 0
+                            if value != 0:
+                                left = True
+                            elif now < suppress_left_release_until:
+                                # Synthetic release from Copilot chord — keep left.
+                                pass
+                            else:
+                                left = False
+                                copilot_latched = False
                         elif code == KEY_RIGHTMETA:
                             right = value != 0
+                        elif is_copilot_code(code) and value == 1:
+                            # Arm only while Left Super is already held (avoids
+                            # "tap Copilot earlier, then hold Win" accidents).
+                            if left:
+                                copilot_latched = True
+                                suppress_left_release_until = now + 0.3
 
-            if left and right:
+            chord_active = left and (right or copilot_latched)
+
+            if chord_active:
                 if hold_started is None:
                     hold_started = now
                     last_second_shown = 0

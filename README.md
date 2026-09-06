@@ -19,7 +19,12 @@ Or from a local checkout (Omarchy requires a real copy, not a symlink):
 
 ## Unlock
 
-Hold **Left Super + Right Super** together for **5 seconds**.
+Hold for **5 seconds**:
+
+- **Left Super + Right Super** together (Mac / dual-Super keyboards), or
+- **Windows (Left Super) + Copilot**: hold **Win**, tap **Copilot** once, keep holding **Win** for 5s
+
+(The Copilot key usually sends a short Meta+Shift+F23 pulse, so it is latched while Win stays down.)
 
 Detected from the raw input device, so it still works after Hyprland has disabled the keyboard.
 
@@ -35,7 +40,7 @@ While Clean Lock is active:
 1. Click the keyboard icon on the bar
 2. Choose **Keyboard**, **Trackpad**, or **Both**
 3. Clean away
-4. Hold both Super keys for 5s (or click **Unlock now** if the trackpad is still enabled)
+4. Hold both Super keys for 5s — or Win + Copilot as above (or click **Unlock now** if the trackpad is still enabled)
 
 ## CLI
 
