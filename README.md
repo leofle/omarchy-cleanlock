@@ -2,10 +2,13 @@
 
 Lock your **keyboard** and/or **trackpad** so you can wipe them without typing gibberish or moving the cursor.
 
+**Plugin ID:** `io.github.leofle.cleanlock`
+
 ## Install
 
 ```bash
 omarchy plugin add https://github.com/leofle/omarchy-cleanlock.git --enable
+omarchy restart shell
 ```
 
 Or from a local checkout (Omarchy requires a real copy, not a symlink):
@@ -22,9 +25,9 @@ Detected from the raw input device, so it still works after Hyprland has disable
 
 ## Bar widget
 
-1. Click the keyboard icon on the bar  
-2. Choose **Keyboard**, **Trackpad**, or **Both**  
-3. Clean away  
+1. Click the keyboard icon on the bar
+2. Choose **Keyboard**, **Trackpad**, or **Both**
+3. Clean away
 4. Hold both Super keys for 5s (or click **Unlock now** if the trackpad is still enabled)
 
 ## CLI
@@ -37,7 +40,19 @@ cleanlock unlock
 cleanlock status
 ```
 
-(`cleanlock` is the script under `bin/`; symlink it to `~/.local/bin` if you want it on your PATH.)
+(`cleanlock` is the script under `bin/`; the install sync links it to `~/.local/bin`.)
+
+## Remove
+
+```bash
+omarchy plugin disable io.github.leofle.cleanlock
+omarchy plugin remove io.github.leofle.cleanlock
+omarchy restart shell
+rm -f ~/.local/bin/cleanlock
+rm -rf ~/.local/state/omarchy/cleanlock
+```
+
+No user Hyprland or shell config is overwritten by this plugin.
 
 ## License
 

@@ -80,7 +80,7 @@ Item {
   Component.onCompleted: refresh()
 
   IpcHandler {
-    target: "cleanlock"
+    target: "io.github.leofle.cleanlock"
     function status(): string {
       return JSON.stringify({
         locked: root.locked,

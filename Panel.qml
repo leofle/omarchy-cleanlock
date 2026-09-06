@@ -7,11 +7,11 @@ import qs.Ui
 // Bar widget + popout for Clean Lock.
 Panel {
   id: root
-  moduleName: "cleanlock"
-  ipcTarget: "cleanlock"
+  moduleName: "io.github.leofle.cleanlock"
+  ipcTarget: "io.github.leofle.cleanlock"
   manageIpc: false
 
-  readonly property string pluginId: "cleanlock"
+  readonly property string pluginId: "io.github.leofle.cleanlock"
   readonly property var service: bar?.shell?.serviceFor(root.pluginId) ?? null
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
