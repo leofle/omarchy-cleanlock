@@ -110,23 +110,25 @@ Panel {
 
         // Dedicated full-width unlock progress so "3/5" is never clipped by hero elide.
         Text {
-          visible: !!service && service.locked && service.chordProgress > 0
+          readonly property var s: root.service
+          visible: !!(s && s.locked && s.chordProgress > 0)
           width: parent.width
           horizontalAlignment: Text.AlignHCenter
           color: root.urgent
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
           font.bold: true
-          text: "Super hold  " + (service ? service.chordProgress : 0) + " / 5"
+          text: "Super hold  " + (s ? s.chordProgress : 0) + " / 5"
         }
 
         Text {
+          readonly property var s: root.service
           width: parent.width
           wrapMode: Text.WordWrap
           color: Qt.darker(root.foreground, 1.4)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          text: service && service.locked
+          text: (s && s.locked)
             ? "Hold Left Super + Right Super for 5 seconds to unlock."
             : "Sleep and lock are inhibited while cleaning."
         }
@@ -165,13 +167,14 @@ Panel {
         PanelSeparator { width: parent.width }
 
         ActionRow {
+          readonly property var s: root.service
           label: "Unlock now"
-          detail: (service && service.chordProgress > 0)
-            ? ("Holding Super " + service.chordProgress + "/5")
+          detail: (s && s.chordProgress > 0)
+            ? ("Holding Super " + s.chordProgress + "/5")
             : "Or hold both Super keys"
           iconText: "󰌿"
-          rowEnabled: !!service && service.locked && !service.busy
-          onActivated: if (service) { service.unlock(); root.close() }
+          rowEnabled: !!(s && s.locked && !s.busy)
+          onActivated: if (s) { s.unlock(); root.close() }
         }
 
         Text {
