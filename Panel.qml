@@ -74,16 +74,14 @@ Panel {
           id: hero
           width: parent.width
           title: "Clean Lock"
+          // Keep meta short — PanelHero elides with "…" and would hide the counter.
           meta: {
             if (!service) return "Loading…"
             if (service.locked) {
               var parts = []
               if (service.keyboardLocked) parts.push("keyboard")
               if (service.trackpadLocked) parts.push("trackpad")
-              var held = service.chordProgress > 0
-                ? (" · Super " + service.chordProgress + "/5")
-                : ""
-              return "Locked: " + parts.join(" + ") + held
+              return "Locked · " + parts.join(" + ")
             }
             return "Ready to clean"
           }
@@ -100,13 +98,27 @@ Panel {
           }
         }
 
+        // Dedicated full-width unlock progress so "3/5" is never clipped by hero elide.
+        Text {
+          visible: !!service && service.locked && service.chordProgress > 0
+          width: parent.width
+          horizontalAlignment: Text.AlignHCenter
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+          font.bold: true
+          text: "Super hold  " + service.chordProgress + " / 5"
+        }
+
         Text {
           width: parent.width
           wrapMode: Text.WordWrap
           color: Qt.darker(root.foreground, 1.4)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          text: "Unlock: hold Left Super + Right Super for 5 seconds. Sleep/lock are inhibited while cleaning."
+          text: service && service.locked
+            ? "Hold Left Super + Right Super for 5 seconds to unlock."
+            : "Sleep and lock are inhibited while cleaning."
         }
 
         PanelSeparator { width: parent.width }
@@ -144,9 +156,9 @@ Panel {
 
         ActionRow {
           label: "Unlock now"
-          detail: service && service.trackpadLocked
-            ? "Or hold both Super keys for 5s"
-            : "Click here, or hold both Super keys 5s"
+          detail: service && service.chordProgress > 0
+            ? ("Holding Super " + service.chordProgress + "/5")
+            : "Or hold both Super keys"
           iconText: "󰌿"
           rowEnabled: !!service && service.locked && !service.busy
           onActivated: if (service) { service.unlock(); root.close() }
@@ -175,7 +187,8 @@ Panel {
     signal activated()
 
     width: column.width
-    height: Style.spacing.popupRowHeight + Style.space(16)
+    implicitHeight: Math.max(Style.spacing.popupRowHeight + Style.space(16), rowLabels.implicitHeight + Style.space(16))
+    height: implicitHeight
     opacity: rowEnabled ? 1 : 0.45
 
     Rectangle {
@@ -198,19 +211,24 @@ Panel {
       }
 
       Column {
+        id: rowLabels
         Layout.fillWidth: true
         spacing: 2
         Text {
+          width: parent.width
           text: row.label
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
+          elide: Text.ElideRight
         }
         Text {
+          width: parent.width
           text: row.detail
           color: Qt.darker(root.foreground, 1.5)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
         }
       }
     }
