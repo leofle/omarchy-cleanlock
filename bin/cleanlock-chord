@@ -150,18 +150,16 @@ def main() -> int:
                     write_progress_seconds(0)
 
                 elapsed = now - hold_started
-                # 0.0–0.999s → 1, 1.0–1.999s → 2, …, >=5s → 5
-                if elapsed >= HOLD_SECONDS:
-                    second = HOLD_SECONDS
-                else:
-                    second = int(elapsed) + 1
+                # Completed whole seconds: 1 after 1s, …, 5 after 5s.
+                # Showing "5" one second early made unlock feel like a 6-count.
+                second = min(HOLD_SECONDS, int(elapsed))
 
-                if second != last_second_shown:
-                    # Progress drives the fullscreen overlay only (no bottom OSD).
+                if second != last_second_shown and second > 0:
                     write_progress_seconds(second)
                     last_second_shown = second
 
                 if elapsed >= HOLD_SECONDS:
+                    write_progress_seconds(HOLD_SECONDS)
                     unlock()
                     return 0
             else:
