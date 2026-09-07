@@ -25,7 +25,23 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onOpenedChanged: if (opened && service) service.refresh()
+  property int selectedAction: 0
+  readonly property var actionRows: [keyboardAction, trackpadAction, bothAction, unlockAction]
+
+  function moveAction(direction) {
+    for (var step = 1; step <= actionRows.length; step++) {
+      var index = (selectedAction + direction * step + actionRows.length * 2) % actionRows.length
+      if (actionRows[index].rowEnabled) { selectedAction = index; return }
+    }
+  }
+
+  onOpenedChanged: {
+    if (opened && service) {
+      service.refresh()
+      selectedAction = -1
+      moveAction(1)
+    }
+  }
 
   LockOverlay {
     service: root.service
@@ -73,6 +89,11 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
+      onMoveRequested: function (dx, dy) { if (dy !== 0) root.moveAction(dy) }
+      onActivateRequested: {
+        var row = root.actionRows[root.selectedAction]
+        if (row && row.rowEnabled) row.activated()
+      }
       onTabRequested: function (direction) { root.switchPanel(direction) }
 
       Column {
@@ -87,6 +108,7 @@ Panel {
           // Keep meta short — PanelHero elides with "…" and would hide the counter.
           meta: {
             if (!service) return "Loading…"
+            if (!service.statusAvailable) return "Status unavailable"
             if (service.locked) {
               var parts = []
               if (service.keyboardLocked) parts.push("keyboard")
@@ -143,37 +165,45 @@ Panel {
         }
 
         ActionRow {
+          id: keyboardAction
+          selected: root.selectedAction === 0
           label: "Keyboard"
           detail: "Disable keys only"
           iconText: "󰌌"
-          rowEnabled: !!service && !service.busy
+          rowEnabled: !!service && service.statusAvailable && !service.busy
           onActivated: if (service) { service.lockKeyboard(); root.close() }
         }
         ActionRow {
+          id: trackpadAction
+          selected: root.selectedAction === 1
           label: "Trackpad"
           detail: "Disable trackpad only"
           iconText: "󰟸"
-          rowEnabled: !!service && !service.busy
+          rowEnabled: !!service && service.statusAvailable && !service.busy
           onActivated: if (service) { service.lockTrackpad(); root.close() }
         }
         ActionRow {
+          id: bothAction
+          selected: root.selectedAction === 2
           label: "Both"
           detail: "Keyboard + trackpad"
           iconText: "󰌾"
-          rowEnabled: !!service && !service.busy
+          rowEnabled: !!service && service.statusAvailable && !service.busy
           onActivated: if (service) { service.lockBoth(); root.close() }
         }
 
         PanelSeparator { width: parent.width }
 
         ActionRow {
+          id: unlockAction
+          selected: root.selectedAction === 3
           readonly property var s: root.service
           label: "Unlock now"
           detail: (s && s.chordProgress > 0)
             ? ("Holding Super " + s.chordProgress + "/5")
             : "Or hold Super / Windows 5s"
           iconText: "󰌿"
-          rowEnabled: !!(s && s.locked && !s.busy)
+          rowEnabled: !!(s && (s.locked || !s.statusAvailable) && !s.busy)
           onActivated: if (s) { s.unlock(); root.close() }
         }
 
@@ -196,18 +226,26 @@ Panel {
     property string detail: ""
     property string iconText: ""
     property bool rowEnabled: true
+    property bool selected: false
     property bool hovered: mouse.containsMouse
     signal activated()
+    Accessible.role: Accessible.Button
+    Accessible.name: label
+    Accessible.description: detail
+    Accessible.focusable: rowEnabled
+    Accessible.focused: selected && keyCatcher.activeFocus
+    Accessible.onPressAction: if (rowEnabled) activated()
 
     width: column.width
     implicitHeight: Math.max(Style.spacing.popupRowHeight + Style.space(16), rowLabels.implicitHeight + Style.space(16))
     height: implicitHeight
+    enabled: rowEnabled
     opacity: rowEnabled ? 1 : 0.45
 
     Rectangle {
       anchors.fill: parent
       radius: Style.cornerRadius
-      color: row.hovered && row.rowEnabled ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
+      color: (row.hovered || row.selected) && row.rowEnabled ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
     }
 
     RowLayout {
