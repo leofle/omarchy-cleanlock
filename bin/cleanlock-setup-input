@@ -1,14 +1,45 @@
 #!/bin/bash
 # Allow the active local desktop session to monitor keyboard keys.
 set -euo pipefail
-rule=$(mktemp)
-trap 'rm -f "$rule"' EXIT
-cat >"$rule" <<'EOF'
-# Clean Lock: grant keyboard input access to the active local session.
-SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
-EOF
-pkexec /usr/bin/install -m 644 "$rule" /etc/udev/rules.d/70-cleanlock-input.rules
-pkexec /usr/bin/udevadm control --reload-rules
-pkexec /usr/bin/udevadm trigger --subsystem-match=input --action=change
+
+target=/etc/udev/rules.d/70-cleanlock-input.rules
+rule='# Clean Lock: grant keyboard input access to the active local session.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"'
+
+# The rule is generated, installed and verified entirely inside the privileged
+# shell: no user-writable path or file content crosses the pkexec boundary,
+# so it cannot be swapped while the authorization dialog is open.
+install_rule() {
+  pkexec /bin/bash -euc '
+target=$1
+rule=$2
+umask 022
+dir=$(dirname "$target")
+mkdir -p "$dir"
+# The staging file lives in the root-owned rules directory, so no unprivileged
+# process can replace it between writing and the atomic rename.
+tmp=$(mktemp "$dir/.cleanlock-input.XXXXXX")
+trap "rm -f \"$tmp\"" EXIT
+printf "%s\n" "$rule" >"$tmp"
+chown 0:0 "$tmp"
+chmod 644 "$tmp"
+mv -f "$tmp" "$target"
+trap - EXIT
+
+[[ "$(cat "$target")" == "$rule" ]] || { echo "cleanlock: installed rule does not match expected content" >&2; exit 1; }
+[[ "$(stat -c "%u:%g:%a" "$target")" == "0:0:644" ]] || { echo "cleanlock: installed rule has unexpected owner or mode" >&2; exit 1; }
+
+udevadm control --reload-rules
+udevadm trigger --subsystem-match=input --action=change
+' cleanlock-install-udev-rule "$target" "$rule"
+}
+
+rule_is_current() {
+  [[ -f $target ]] &&
+    [[ "$(stat -c '%u:%g:%a' "$target" 2>/dev/null)" == "0:0:644" ]] &&
+    [[ "$(cat "$target" 2>/dev/null)" == "$rule" ]]
+}
+
+rule_is_current || install_rule
 udevadm settle
 python3 "$(dirname "$(readlink -f "$0")")/cleanlock-chord" --check

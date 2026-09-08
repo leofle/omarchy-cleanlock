@@ -41,7 +41,9 @@ Run once after installation:
 ~/.config/omarchy/plugins/io.github.leofle.cleanlock/bin/cleanlock setup-input
 ```
 
-Approve the administrator prompts. This installs a udev rule granting the active
+Approve the single administrator prompt. The rule is generated, installed and
+verified inside the privileged helper, so no user-writable file is handed across
+the privilege boundary. This installs a udev rule granting the active
 local session access to keyboard input devices (including typed keys).
 The standard uaccess ACL grants read/write device access; the monitor opens
 devices read-only.

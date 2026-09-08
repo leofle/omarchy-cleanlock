@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.leofle.cleanlock",
   "name": "Clean Lock",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "author": "leofle",
   "license": "MIT",
   "description": "Lock keyboard and/or trackpad for cleaning. Unlock by holding one Super/Windows key for 5 seconds. Inhibits sleep/idle while active and auto-unlocks if the session locks.",
